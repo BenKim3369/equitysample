@@ -1,0 +1,74 @@
+{
+  "workbook": {
+    "file_pattern": "★(매주금)_원자재가격.xlsx",
+    "fallback_search_patterns": [
+      "★(매주금)_원자재가격*.xlsx",
+      "*_원자재가격*.xlsx"
+    ],
+    "sheet_name": "Chart",
+    "protected_sheet_names": ["Table"],
+    "output_name_template": "★(매주금)_원자재가격_updated_{timestamp}.xlsx"
+  },
+  "logging": {
+    "update_log_name_template": "update_log_{timestamp}.csv",
+    "manual_review_log_name_template": "manual_review_{timestamp}.csv"
+  },
+  "minerals": {
+    "Lithium": {
+      "date_col": "A",
+      "price_col": "B",
+      "expected_units": ["CNY/kg", "위안/kg", "元/kg", "RMB/kg"],
+      "series_keywords": ["lithium", "리튬", "탄산리튬", "lithium carbonate"],
+      "strict_keywords": ["carbonate", "탄산"],
+      "ambiguous_keywords": ["hydroxide", "수산화", "battery", "industrial"]
+    },
+    "Nickel": {
+      "date_col": "G",
+      "price_col": "H",
+      "expected_units": ["USD/ton", "USD/mt", "US$/ton", "달러/톤"],
+      "series_keywords": ["nickel", "니켈"],
+      "strict_keywords": [],
+      "ambiguous_keywords": []
+    },
+    "Cobalt": {
+      "date_col": "M",
+      "price_col": "N",
+      "expected_units": ["USD/ton", "USD/mt", "US$/ton", "달러/톤"],
+      "series_keywords": ["cobalt", "코발트"],
+      "strict_keywords": [],
+      "ambiguous_keywords": []
+    },
+    "Manganese": {
+      "date_col": "S",
+      "price_col": "T",
+      "expected_units": ["USD/ton", "USD/mt", "US$/ton", "달러/톤"],
+      "series_keywords": ["manganese", "망간"],
+      "strict_keywords": [],
+      "ambiguous_keywords": ["ore", "합금", "fob", "cif"]
+    },
+    "Copper": {
+      "date_col": "Y",
+      "price_col": "Z",
+      "expected_units": ["USD/ton", "USD/mt", "US$/ton", "달러/톤"],
+      "series_keywords": ["copper", "구리", "동"],
+      "strict_keywords": [],
+      "ambiguous_keywords": []
+    },
+    "Aluminum": {
+      "date_col": "AE",
+      "price_col": "AF",
+      "expected_units": ["USD/ton", "USD/mt", "US$/ton", "달러/톤"],
+      "series_keywords": ["aluminum", "aluminium", "알루미늄"],
+      "strict_keywords": [],
+      "ambiguous_keywords": []
+    },
+    "LiPF6": {
+      "date_col": "AK",
+      "price_col": "AL",
+      "expected_units": ["10k CNY/ton", "만위안/톤", "만위안/ton", "만원/톤"],
+      "series_keywords": ["lipf6", "LiPF6", "육불화인산리튬"],
+      "strict_keywords": [],
+      "ambiguous_keywords": []
+    }
+  }
+}
