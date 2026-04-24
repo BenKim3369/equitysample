@@ -7,7 +7,7 @@ import os
 import re
 import ssl
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Callable, Iterable, TypeVar
@@ -220,25 +220,6 @@ class ReferenceCandidate:
     ref_type: str
 
 
-def target_publication_window_kst(now_kst: datetime) -> tuple[datetime, datetime]:
-    """
-    Returns inclusive KST window.
-    - Tue~Sun runs: previous day (00:00:00 ~ 23:59:59.999999)
-    - Mon runs: Friday~Sunday (00:00:00 Friday ~ 23:59:59.999999 Sunday)
-    """
-    run_day = now_kst.date()
-    if now_kst.weekday() == 0:  # Monday
-        start_day = run_day - timedelta(days=3)
-        end_day = run_day - timedelta(days=1)
-    else:
-        start_day = run_day - timedelta(days=1)
-        end_day = start_day
-
-    start_dt = datetime.combine(start_day, time.min, tzinfo=ZoneInfo("Asia/Seoul"))
-    end_dt = datetime.combine(end_day, time.max, tzinfo=ZoneInfo("Asia/Seoul"))
-    return start_dt, end_dt
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Daily news candidate pipeline")
     parser.add_argument(
@@ -376,11 +357,6 @@ def source_priority(article: Article) -> int:
     if is_korean_media_article(article):
         return 1
     return 2
-
-
-def is_in_target_publication_window(article: Article, start_kst: datetime, end_kst: datetime) -> bool:
-    published_kst = article.published_at.astimezone(ZoneInfo("Asia/Seoul"))
-    return start_kst <= published_kst <= end_kst
 
 
 def select_main_candidates_with_naver_priority(candidates: list[MainCandidate]) -> list[MainCandidate]:
@@ -525,28 +501,16 @@ def render(main_items: list[MainCandidate], ref_items: list[ReferenceCandidate])
     return "\n".join(lines).rstrip() + "\n"
 
 
-def load_seed_articles(now_kst: datetime) -> list[Article]:
-    start_kst, end_kst = target_publication_window_kst(now_kst)
-    seed_day = end_kst.date()
-    seed_times = [
-        datetime.combine(seed_day, time(8, 30), tzinfo=ZoneInfo("Asia/Seoul")),
-        datetime.combine(seed_day, time(10, 0), tzinfo=ZoneInfo("Asia/Seoul")),
-        datetime.combine(seed_day, time(12, 0), tzinfo=ZoneInfo("Asia/Seoul")),
-        datetime.combine(seed_day, time(14, 0), tzinfo=ZoneInfo("Asia/Seoul")),
-        datetime.combine(seed_day, time(16, 0), tzinfo=ZoneInfo("Asia/Seoul")),
-        datetime.combine(seed_day, time(18, 0), tzinfo=ZoneInfo("Asia/Seoul")),
-    ]
-
+def load_seed_articles() -> list[Article]:
     out: list[Article] = []
-    for idx, row in enumerate(SEED_ARTICLES):
-        published_at = seed_times[idx % len(seed_times)].astimezone(timezone.utc)
+    for row in SEED_ARTICLES:
         out.append(
             Article(
                 title=row["title"],
                 link=row["link"],
                 source=row["source"],
                 summary=row["summary"],
-                published_at=published_at,
+                published_at=datetime.fromisoformat(row["published_at"]).astimezone(timezone.utc),
             )
         )
     return out
@@ -555,8 +519,6 @@ def load_seed_articles(now_kst: datetime) -> list[Article]:
 def main() -> int:
     args = parse_args()
     load_dotenv()
-    now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
-    window_start_kst, window_end_kst = target_publication_window_kst(now_kst)
 
     fetched: list[Article] = []
     naver_items = fetch_naver_news()
@@ -578,7 +540,7 @@ def main() -> int:
             continue
 
     if not fetched:
-        fetched = load_seed_articles(now_kst)
+        fetched = load_seed_articles()
 
     deduped = deduplicate(fetched)
 
@@ -586,8 +548,6 @@ def main() -> int:
     reference_candidates: list[ReferenceCandidate] = []
 
     for article in deduped:
-        if not is_in_target_publication_window(article, window_start_kst, window_end_kst):
-            continue
         if is_blocked_source(article):
             continue
         if not is_internationally_relevant(article):
@@ -612,10 +572,6 @@ def main() -> int:
     OUTPUT_PATH.write_text(render(ranked_main, ranked_reference), encoding="utf-8")
 
     print(f"Generated: {OUTPUT_PATH}")
-    print(
-        "Publication window (KST): "
-        f"{window_start_kst.strftime('%Y-%m-%d %H:%M:%S')} ~ {window_end_kst.strftime('%Y-%m-%d %H:%M:%S')}"
-    )
     print(f"Main candidates: {len(ranked_main)}")
     print(f"Reference news: {len(ranked_reference)}")
 
