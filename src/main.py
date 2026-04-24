@@ -84,17 +84,30 @@ RSS_FEEDS = [
 
 REFERENCE_KEYWORDS = {
     "earnings": "earnings",
+    "실적": "earnings",
     "guidance": "guidance",
+    "가이던스": "guidance",
+    "전망": "guidance",
     "consensus": "guidance",
+    "컨센서스": "guidance",
     "operating profit": "earnings",
+    "영업이익": "earnings",
     "sales": "earnings",
+    "매출": "earnings",
     "revenue": "earnings",
     "disclosure": "disclosure",
+    "공시": "disclosure",
     "filing": "disclosure",
+    "신고": "disclosure",
     "ir": "IR",
     "investor relations": "IR",
+    "투자자 관계": "IR",
+    "ir자료": "IR",
     "quarterly report": "earnings",
+    "분기보고서": "earnings",
     "annual report": "earnings",
+    "사업보고서": "earnings",
+    "연차보고서": "earnings",
     "q1": "earnings",
     "q2": "earnings",
     "q3": "earnings",
@@ -108,31 +121,58 @@ REFERENCE_PATTERNS = [
 
 MAIN_KEYWORD_WEIGHTS = {
     "comeback": 3,
+    "컴백": 3,
     "tour": 3,
+    "투어": 3,
     "contract": 2,
+    "계약": 2,
     "controversy": 3,
+    "논란": 3,
     "viewership": 3,
+    "시청률": 3,
+    "화제성": 2,
     "ratings": 2,
     "streaming": 2,
+    "스트리밍": 2,
     "ott": 2,
+    "오티티": 2,
     "cinema": 2,
+    "극장": 2,
     "box office": 3,
+    "박스오피스": 3,
+    "흥행": 3,
     "inbound": 2,
+    "인바운드": 2,
     "outbound": 2,
+    "아웃바운드": 2,
     "tourism": 2,
+    "관광": 2,
     "cancellation": 2,
+    "결항": 2,
     "cancelled": 2,
     "fuel surcharge": 3,
+    "유류할증료": 3,
     "casino": 2,
+    "카지노": 2,
     "hotel": 2,
+    "호텔": 2,
     "leisure": 2,
+    "레저": 2,
     "policy": 2,
+    "정책": 2,
     "demand": 2,
+    "수요": 2,
     "merger": 3,
+    "합병": 3,
     "acquisition": 3,
+    "인수": 3,
+    "인수합병": 3,
     "m&a": 3,
     "partnership": 2,
+    "협력": 2,
+    "파트너십": 2,
     "regulation": 2,
+    "규제": 2,
 }
 
 BLOCKED_SOURCE_PATTERNS = [
@@ -693,6 +733,24 @@ def main() -> int:
 
     ranked_main = prioritize_naver_output(ranked_main, lambda x: x.article)
     ranked_reference = prioritize_naver_output(ranked_reference, lambda x: x.article)
+
+    if not ranked_main and not ranked_reference:
+        fallback_pool = sorted(
+            [
+                a
+                for a in deduped
+                if is_in_target_publication_window(a, window_start_kst, window_end_kst)
+                and not is_blocked_source(a)
+                and is_internationally_relevant(a)
+            ],
+            key=lambda a: (source_priority(a), -a.published_at.timestamp()),
+        )
+        if not fallback_pool:
+            fallback_pool = load_seed_articles(now_kst)
+        ranked_main = [
+            MainCandidate(article=article, importance="low", reason="Fallback candidate due to empty classification result.")
+            for article in fallback_pool[: min(MAX_MAIN, 10)]
+        ]
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(render(ranked_main, ranked_reference), encoding="utf-8")
