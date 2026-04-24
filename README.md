@@ -24,6 +24,8 @@ Copy `.env.example` to `.env` and set values:
 - `TELEGRAM_CHAT_ID`
 
 If Telegram variables are missing, the pipeline still generates `outputs/daily_news_candidates.md` and prints a warning instead of failing.
+If NAVER credentials are present, the pipeline also pulls recent Naver news API results before RSS fallback.
+Main candidate selection prioritizes Naver results so that at least 70% of Main News Candidates are sourced from Naver when available.
 
 ## GitHub Actions + Secrets
 
@@ -40,3 +42,5 @@ Set the following repository secrets before enabling scheduled delivery:
 - `TELEGRAM_CHAT_ID`
 
 > Safety: Telegram delivery is skipped unless `TELEGRAM_CHAT_ID` is explicitly provided.
+> Never commit `.env` (real credentials) to git.
+> Low-quality SEO aggregators (e.g., Travel And Tour World, thetraveler.org) are excluded.

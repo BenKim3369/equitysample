@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import math
 import os
 import re
 import ssl
@@ -13,40 +14,43 @@ from typing import Iterable
 from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import urlopen
 import xml.etree.ElementTree as ET
+from zoneinfo import ZoneInfo
 
+from news_sources.naver_client import fetch_naver_news
 from notify.telegram_sender import send_markdown_to_telegram
 
 OUTPUT_PATH = Path("outputs/daily_news_candidates.md")
 MAX_MAIN = 20
 MAX_REFERENCE = 20
+TARGET_NAVER_RATIO = 0.7
 
 
 SEED_ARTICLES = [
     {
         "title": "Global pop group announces comeback world tour after label contract renewal",
         "link": "https://example.com/news/pop-group-comeback-tour",
-        "source": "Music Business Worldwide",
+        "source": "Naver News",
         "summary": "Major artist comeback and multi-continent tour expected to lift ticketing and streaming demand.",
         "published_at": "2026-04-24T08:30:00+00:00",
     },
     {
         "title": "Streaming platform says drama series breaks OTT viewership records in Asia",
         "link": "https://example.com/news/ott-viewership-record",
-        "source": "Variety",
+        "source": "Naver News",
         "summary": "Content performance improved subscription and ad-supported watch time across key markets.",
         "published_at": "2026-04-24T06:00:00+00:00",
     },
     {
         "title": "Airport authority approves temporary fuel surcharge as airlines trim routes",
         "link": "https://example.com/news/airline-fuel-surcharge",
-        "source": "Reuters",
+        "source": "Naver News",
         "summary": "Airline cancellations and surcharge updates could affect outbound tourism demand this quarter.",
         "published_at": "2026-04-23T23:00:00+00:00",
     },
     {
         "title": "Resort operator and gaming company sign strategic partnership for integrated leisure project",
         "link": "https://example.com/news/casino-hotel-partnership",
-        "source": "Bloomberg",
+        "source": "Naver News",
         "summary": "Casino and hotel demand outlook improved after policy support for inbound visitors.",
         "published_at": "2026-04-23T19:00:00+00:00",
     },
@@ -126,6 +130,41 @@ MAIN_KEYWORD_WEIGHTS = {
     "partnership": 2,
     "regulation": 2,
 }
+
+BLOCKED_SOURCE_PATTERNS = [
+    "travel and tour world",
+    "travelandtourworld",
+    "thetraveler.org",
+    "traveloffpath",
+    "traveltourworld",
+]
+
+BLOCKED_DOMAINS = {
+    "travelandtourworld.com",
+    "www.travelandtourworld.com",
+    "thetraveler.org",
+    "www.thetraveler.org",
+    "traveloffpath.com",
+    "www.traveloffpath.com",
+}
+
+KOREA_RELEVANCE_KEYWORDS = {
+    "korea",
+    "korean",
+    "seoul",
+    "busan",
+    "incheon",
+    "jeju",
+    "hyundai",
+    "samsung",
+    "lg",
+    "kakao",
+    "naver",
+    "coupang",
+}
+
+TOURISM_FLOW_KEYWORDS = {"tourism", "inbound", "outbound", "korea", "japan", "china", "travel flow"}
+MACRO_KEYWORDS = {"fuel surcharge", "aviation", "airline", "cancellation", "casino demand", "casino"}
 
 
 @dataclass
@@ -247,6 +286,55 @@ def deduplicate(articles: Iterable[Article]) -> list[Article]:
     return list(by_title.values())
 
 
+def is_blocked_source(article: Article) -> bool:
+    source_lower = article.source.lower()
+    domain = urlparse(article.link).netloc.lower()
+    if domain in BLOCKED_DOMAINS:
+        return True
+    return any(pattern in source_lower or pattern in domain for pattern in BLOCKED_SOURCE_PATTERNS)
+
+
+def is_internationally_relevant(article: Article) -> bool:
+    if article.source == "Naver News":
+        return True
+    text = f"{article.title} {article.summary}".lower()
+    has_korean_company_relevance = any(keyword in text for keyword in KOREA_RELEVANCE_KEYWORDS)
+    has_tourism_flow_relevance = any(keyword in text for keyword in TOURISM_FLOW_KEYWORDS)
+    has_macro_relevance = any(keyword in text for keyword in MACRO_KEYWORDS)
+    return has_korean_company_relevance or has_tourism_flow_relevance or has_macro_relevance
+
+
+def select_main_candidates_with_naver_priority(candidates: list[MainCandidate]) -> list[MainCandidate]:
+    if not candidates:
+        return []
+
+    ranked_all = rank_main(candidates)
+    ranked_naver = [item for item in ranked_all if item.article.source == "Naver News"]
+
+    total = min(MAX_MAIN, len(ranked_all))
+    while total > 0 and len(ranked_naver) < math.ceil(TARGET_NAVER_RATIO * total):
+        total -= 1
+    if total == 0:
+        return []
+
+    selected = ranked_all[:total]
+    required_naver = math.ceil(TARGET_NAVER_RATIO * total)
+    current_naver = sum(1 for item in selected if item.article.source == "Naver News")
+
+    if current_naver < required_naver:
+        replacements_needed = required_naver - current_naver
+        selected_naver_links = {item.article.link for item in selected if item.article.source == "Naver News"}
+        naver_pool = [item for item in ranked_naver if item.article.link not in selected_naver_links]
+
+        for replacement in naver_pool[:replacements_needed]:
+            for idx in range(len(selected) - 1, -1, -1):
+                if selected[idx].article.source != "Naver News":
+                    selected[idx] = replacement
+                    break
+
+    return rank_main(selected)
+
+
 def is_more_reliable(candidate: Article, existing: Article) -> bool:
     tier = {
         "Reuters": 5,
@@ -315,45 +403,16 @@ def category_label(article: Article) -> str:
 
 
 def render(main_items: list[MainCandidate], ref_items: list[ReferenceCandidate]) -> str:
-    lines: list[str] = [
-        "# Daily News Candidates",
-        "",
-        "## Main News Candidates",
-        "",
-    ]
+    kst_date = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
+    lines: list[str] = [f"{kst_date} 뉴스", ""]
 
-    if not main_items:
-        lines.append("No main news candidates found.")
-    else:
-        for idx, item in enumerate(main_items, start=1):
-            article = item.article
-            lines.extend(
-                [
-                    f"{idx}. [{category_label(article)}] {article.title}",
-                    f"- Importance: {item.importance}",
-                    f"- Reason: {item.reason}",
-                    f"- 1-line summary: {one_line_summary(article)}",
-                    f"- Link: {article.link}",
-                    "",
-                ]
-            )
+    combined_articles = [item.article for item in main_items] + [item.article for item in ref_items]
 
-    lines.extend(["## Reference News", ""])
-
-    if not ref_items:
-        lines.append("No reference news found.")
-    else:
-        for idx, item in enumerate(ref_items, start=1):
-            article = item.article
-            lines.extend(
-                [
-                    f"{idx}. [{category_label(article)}] {article.title}",
-                    f"- Type: {item.ref_type}",
-                    f"- 1-line summary: {one_line_summary(article)}",
-                    f"- Link: {article.link}",
-                    "",
-                ]
-            )
+    for idx, article in enumerate(combined_articles):
+        lines.append(article.title)
+        lines.append(article.link)
+        if idx != len(combined_articles) - 1:
+            lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -378,6 +437,18 @@ def main() -> int:
     load_dotenv()
 
     fetched: list[Article] = []
+    naver_items = fetch_naver_news()
+    for item in naver_items:
+        fetched.append(
+            Article(
+                title=item["title"],
+                link=item["link"],
+                source=item.get("source", "Naver News"),
+                summary=item.get("summary", ""),
+                published_at=item["published_at"],
+            )
+        )
+
     for feed in RSS_FEEDS:
         try:
             fetched.extend(fetch_feed(feed))
@@ -393,6 +464,11 @@ def main() -> int:
     reference_candidates: list[ReferenceCandidate] = []
 
     for article in deduped:
+        if is_blocked_source(article):
+            continue
+        if not is_internationally_relevant(article):
+            continue
+
         ref_type = classify_reference(article)
         if ref_type:
             reference_candidates.append(ReferenceCandidate(article=article, ref_type=ref_type))
@@ -402,7 +478,7 @@ def main() -> int:
         if main_item:
             main_candidates.append(main_item)
 
-    ranked_main = rank_main(main_candidates)[:MAX_MAIN]
+    ranked_main = select_main_candidates_with_naver_priority(main_candidates)
     ranked_reference = rank_reference(reference_candidates)[:MAX_REFERENCE]
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
