@@ -403,8 +403,8 @@ def category_label(article: Article) -> str:
 
 
 def render(main_items: list[MainCandidate], ref_items: list[ReferenceCandidate]) -> str:
-    kst_date = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%y/%m/%d")
-    lines: list[str] = [f"★주요 뉴스({kst_date})", ""]
+    kst_date = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
+    lines: list[str] = [f"{kst_date} 뉴스", ""]
 
     combined_articles = [item.article for item in main_items] + [item.article for item in ref_items]
 
