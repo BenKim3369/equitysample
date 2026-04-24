@@ -28,6 +28,7 @@ If NAVER credentials are present, the pipeline also pulls recent Naver news API 
 Main candidate selection prioritizes Naver results so that at least 70% of Main News Candidates are sourced from Naver when available.
 Final output ordering also prioritizes Naver News links first, targeting a Naver-heavy result list.
 기사 우선순위는 `네이버 뉴스 > 한국 언론 기사 > 글로벌 기사` 순으로 적용됩니다.
+수집 대상 시간대는 KST 기준으로 전일 24시간(00:00~23:59:59)이며, 월요일 실행 시에는 금/토/일 3일치를 포함합니다.
 
 ## GitHub Actions + Secrets
 
