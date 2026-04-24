@@ -29,6 +29,7 @@ Main candidate selection prioritizes Naver results so that at least 70% of Main 
 Final output ordering also prioritizes Naver News links first, targeting a Naver-heavy result list.
 기사 우선순위는 `네이버 뉴스 > 한국 언론 기사 > 글로벌 기사` 순으로 적용됩니다.
 수집 대상 시간대는 KST 기준으로 전일 24시간(00:00~23:59:59)이며, 월요일 실행 시에는 금/토/일 3일치를 포함합니다.
+최종 출력 시 기사 제목이 한국어가 아니면 한국어 번역을 시도하며, 링크 길이가 70자 이상이면 단축 URL로 변환을 시도합니다.
 
 ## GitHub Actions + Secrets
 

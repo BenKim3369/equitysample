@@ -7,7 +7,7 @@ import os
 import re
 import ssl
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Callable, Iterable, TypeVar
@@ -16,6 +16,7 @@ from urllib.request import urlopen
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
+import requests
 from news_sources.naver_client import fetch_naver_news
 from notify.telegram_sender import send_markdown_to_telegram
 
@@ -220,6 +221,25 @@ class ReferenceCandidate:
     ref_type: str
 
 
+def target_publication_window_kst(now_kst: datetime) -> tuple[datetime, datetime]:
+    """
+    Returns inclusive KST window.
+    - Tue~Sun runs: previous day (00:00:00 ~ 23:59:59.999999)
+    - Mon runs: Friday~Sunday (00:00:00 Friday ~ 23:59:59.999999 Sunday)
+    """
+    run_day = now_kst.date()
+    if now_kst.weekday() == 0:  # Monday
+        start_day = run_day - timedelta(days=3)
+        end_day = run_day - timedelta(days=1)
+    else:
+        start_day = run_day - timedelta(days=1)
+        end_day = start_day
+
+    start_dt = datetime.combine(start_day, time.min, tzinfo=ZoneInfo("Asia/Seoul"))
+    end_dt = datetime.combine(end_day, time.max, tzinfo=ZoneInfo("Asia/Seoul"))
+    return start_dt, end_dt
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Daily news candidate pipeline")
     parser.add_argument(
@@ -359,6 +379,11 @@ def source_priority(article: Article) -> int:
     return 2
 
 
+def is_in_target_publication_window(article: Article, start_kst: datetime, end_kst: datetime) -> bool:
+    published_kst = article.published_at.astimezone(ZoneInfo("Asia/Seoul"))
+    return start_kst <= published_kst <= end_kst
+
+
 def select_main_candidates_with_naver_priority(candidates: list[MainCandidate]) -> list[MainCandidate]:
     if not candidates:
         return []
@@ -486,6 +511,91 @@ def category_label(article: Article) -> str:
     return host or "General"
 
 
+def contains_korean(text: str) -> bool:
+    return bool(re.search(r"[가-힣]", text))
+
+
+def translate_to_korean(text: str) -> str:
+    if not text.strip() or contains_korean(text):
+        return text
+    naver_client_id = os.getenv("NAVER_CLIENT_ID", "").strip()
+    naver_client_secret = os.getenv("NAVER_CLIENT_SECRET", "").strip()
+    if naver_client_id and naver_client_secret:
+        try:
+            response = requests.post(
+                "https://openapi.naver.com/v1/papago/n2mt",
+                headers={
+                    "X-Naver-Client-Id": naver_client_id,
+                    "X-Naver-Client-Secret": naver_client_secret,
+                },
+                data={"source": "en", "target": "ko", "text": text},
+                timeout=10,
+            )
+            response.raise_for_status()
+            translated = response.json()["message"]["result"]["translatedText"].strip()
+            if translated:
+                return translated
+        except (requests.RequestException, KeyError, ValueError, TypeError):
+            pass
+
+    try:
+        response = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "auto", "tl": "ko", "dt": "t", "q": text},
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        translated = "".join(chunk[0] for chunk in payload[0] if chunk and chunk[0])
+        return translated.strip() or text
+    except (requests.RequestException, ValueError, TypeError):
+        pass
+
+    fallback_map = {
+        "comeback": "컴백",
+        "world tour": "월드 투어",
+        "tour": "투어",
+        "contract": "계약",
+        "renewal": "재계약",
+        "streaming": "스트리밍",
+        "viewership": "시청률",
+        "record": "기록",
+        "airport": "공항",
+        "airline": "항공사",
+        "fuel surcharge": "유류할증료",
+        "cancellation": "결항",
+        "strategic partnership": "전략적 파트너십",
+        "resort": "리조트",
+        "gaming": "카지노",
+        "annual report": "연차보고서",
+        "earnings": "실적",
+    }
+    translated_text = text
+    for en, ko in fallback_map.items():
+        translated_text = re.sub(rf"\b{re.escape(en)}\b", ko, translated_text, flags=re.IGNORECASE)
+    return translated_text
+
+
+def shorten_url_if_needed(url: str) -> str:
+    if len(url) < 70:
+        return url
+    try:
+        response = requests.get("https://tinyurl.com/api-create.php", params={"url": url}, timeout=10)
+        response.raise_for_status()
+        shortened = response.text.strip()
+        if shortened.startswith("http://") or shortened.startswith("https://"):
+            return shortened
+    except requests.RequestException:
+        pass
+
+    parsed = urlparse(url)
+    if "naver.com" in parsed.netloc:
+        compact = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        if len(compact) < len(url):
+            return compact
+    return url
+
+
 def render(main_items: list[MainCandidate], ref_items: list[ReferenceCandidate]) -> str:
     kst_date = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%y/%m/%d")
     lines: list[str] = [f"★주요 뉴스({kst_date})", ""]
@@ -493,24 +603,36 @@ def render(main_items: list[MainCandidate], ref_items: list[ReferenceCandidate])
     combined_articles = [item.article for item in main_items] + [item.article for item in ref_items]
 
     for idx, article in enumerate(combined_articles):
-        lines.append(article.title)
-        lines.append(article.link)
+        lines.append(translate_to_korean(article.title))
+        lines.append(shorten_url_if_needed(article.link))
         if idx != len(combined_articles) - 1:
             lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
 
 
-def load_seed_articles() -> list[Article]:
+def load_seed_articles(now_kst: datetime) -> list[Article]:
+    start_kst, end_kst = target_publication_window_kst(now_kst)
+    seed_day = end_kst.date()
+    seed_times = [
+        datetime.combine(seed_day, time(8, 30), tzinfo=ZoneInfo("Asia/Seoul")),
+        datetime.combine(seed_day, time(10, 0), tzinfo=ZoneInfo("Asia/Seoul")),
+        datetime.combine(seed_day, time(12, 0), tzinfo=ZoneInfo("Asia/Seoul")),
+        datetime.combine(seed_day, time(14, 0), tzinfo=ZoneInfo("Asia/Seoul")),
+        datetime.combine(seed_day, time(16, 0), tzinfo=ZoneInfo("Asia/Seoul")),
+        datetime.combine(seed_day, time(18, 0), tzinfo=ZoneInfo("Asia/Seoul")),
+    ]
+
     out: list[Article] = []
-    for row in SEED_ARTICLES:
+    for idx, row in enumerate(SEED_ARTICLES):
+        published_at = seed_times[idx % len(seed_times)].astimezone(timezone.utc)
         out.append(
             Article(
                 title=row["title"],
                 link=row["link"],
                 source=row["source"],
                 summary=row["summary"],
-                published_at=datetime.fromisoformat(row["published_at"]).astimezone(timezone.utc),
+                published_at=published_at,
             )
         )
     return out
@@ -519,6 +641,8 @@ def load_seed_articles() -> list[Article]:
 def main() -> int:
     args = parse_args()
     load_dotenv()
+    now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+    window_start_kst, window_end_kst = target_publication_window_kst(now_kst)
 
     fetched: list[Article] = []
     naver_items = fetch_naver_news()
@@ -540,7 +664,7 @@ def main() -> int:
             continue
 
     if not fetched:
-        fetched = load_seed_articles()
+        fetched = load_seed_articles(now_kst)
 
     deduped = deduplicate(fetched)
 
@@ -548,6 +672,8 @@ def main() -> int:
     reference_candidates: list[ReferenceCandidate] = []
 
     for article in deduped:
+        if not is_in_target_publication_window(article, window_start_kst, window_end_kst):
+            continue
         if is_blocked_source(article):
             continue
         if not is_internationally_relevant(article):
@@ -572,6 +698,10 @@ def main() -> int:
     OUTPUT_PATH.write_text(render(ranked_main, ranked_reference), encoding="utf-8")
 
     print(f"Generated: {OUTPUT_PATH}")
+    print(
+        "Publication window (KST): "
+        f"{window_start_kst.strftime('%Y-%m-%d %H:%M:%S')} ~ {window_end_kst.strftime('%Y-%m-%d %H:%M:%S')}"
+    )
     print(f"Main candidates: {len(ranked_main)}")
     print(f"Reference news: {len(ranked_reference)}")
 
