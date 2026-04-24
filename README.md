@@ -26,6 +26,8 @@ Copy `.env.example` to `.env` and set values:
 If Telegram variables are missing, the pipeline still generates `outputs/daily_news_candidates.md` and prints a warning instead of failing.
 If NAVER credentials are present, the pipeline also pulls recent Naver news API results before RSS fallback.
 Main candidate selection prioritizes Naver results so that at least 70% of Main News Candidates are sourced from Naver when available.
+Final output ordering also prioritizes Naver News links first, targeting a Naver-heavy result list.
+기사 우선순위는 `네이버 뉴스 > 한국 언론 기사 > 글로벌 기사` 순으로 적용됩니다.
 
 ## GitHub Actions + Secrets
 

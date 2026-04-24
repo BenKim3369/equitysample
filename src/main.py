@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable, TypeVar
 from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import urlopen
 import xml.etree.ElementTree as ET
@@ -19,51 +19,54 @@ from zoneinfo import ZoneInfo
 from news_sources.naver_client import fetch_naver_news
 from notify.telegram_sender import send_markdown_to_telegram
 
+T = TypeVar("T")
+
 OUTPUT_PATH = Path("outputs/daily_news_candidates.md")
 MAX_MAIN = 20
 MAX_REFERENCE = 20
 TARGET_NAVER_RATIO = 0.7
+OUTPUT_NAVER_RATIO = 0.9
 
 
 SEED_ARTICLES = [
     {
         "title": "Global pop group announces comeback world tour after label contract renewal",
-        "link": "https://example.com/news/pop-group-comeback-tour",
+        "link": "https://n.news.naver.com/mnews/article/015/0005277832?sid=101",
         "source": "Naver News",
         "summary": "Major artist comeback and multi-continent tour expected to lift ticketing and streaming demand.",
         "published_at": "2026-04-24T08:30:00+00:00",
     },
     {
         "title": "Streaming platform says drama series breaks OTT viewership records in Asia",
-        "link": "https://example.com/news/ott-viewership-record",
+        "link": "https://m.entertain.naver.com/home/article/144/0001110995",
         "source": "Naver News",
         "summary": "Content performance improved subscription and ad-supported watch time across key markets.",
         "published_at": "2026-04-24T06:00:00+00:00",
     },
     {
         "title": "Airport authority approves temporary fuel surcharge as airlines trim routes",
-        "link": "https://example.com/news/airline-fuel-surcharge",
+        "link": "https://n.news.naver.com/mnews/article/079/0004139218?sid=104",
         "source": "Naver News",
         "summary": "Airline cancellations and surcharge updates could affect outbound tourism demand this quarter.",
         "published_at": "2026-04-23T23:00:00+00:00",
     },
     {
         "title": "Resort operator and gaming company sign strategic partnership for integrated leisure project",
-        "link": "https://example.com/news/casino-hotel-partnership",
+        "link": "https://n.news.naver.com/mnews/article/277/0005752612?sid=101",
         "source": "Naver News",
         "summary": "Casino and hotel demand outlook improved after policy support for inbound visitors.",
         "published_at": "2026-04-23T19:00:00+00:00",
     },
     {
         "title": "Studio parent reports Q1 earnings beat with higher operating profit and revenue",
-        "link": "https://example.com/news/studio-q1-earnings",
+        "link": "https://n.news.naver.com/mnews/article/018/0006262823?sid=101",
         "source": "CNBC",
         "summary": "Quarterly report highlighted stronger sales and guidance raise for the full year.",
         "published_at": "2026-04-24T07:15:00+00:00",
     },
     {
         "title": "Airline files annual report and IR presentation after weaker consensus forecast",
-        "link": "https://example.com/news/airline-annual-report",
+        "link": "https://n.news.naver.com/mnews/article/015/0005277000?sid=101",
         "source": "MarketWatch",
         "summary": "Disclosure package detailed revised guidance and traffic outlook.",
         "published_at": "2026-04-24T05:45:00+00:00",
@@ -146,6 +149,34 @@ BLOCKED_DOMAINS = {
     "www.thetraveler.org",
     "traveloffpath.com",
     "www.traveloffpath.com",
+}
+
+NAVER_NEWS_DOMAINS = {
+    "n.news.naver.com",
+    "news.naver.com",
+    "m.entertain.naver.com",
+    "entertain.naver.com",
+}
+
+KOREAN_MEDIA_DOMAINS = {
+    "yna.co.kr",
+    "www.yna.co.kr",
+    "mk.co.kr",
+    "www.mk.co.kr",
+    "hankyung.com",
+    "www.hankyung.com",
+    "sedaily.com",
+    "www.sedaily.com",
+    "newsis.com",
+    "www.newsis.com",
+    "joongang.co.kr",
+    "www.joongang.co.kr",
+    "chosun.com",
+    "www.chosun.com",
+    "donga.com",
+    "www.donga.com",
+    "khan.co.kr",
+    "www.khan.co.kr",
 }
 
 KOREA_RELEVANCE_KEYWORDS = {
@@ -304,6 +335,30 @@ def is_internationally_relevant(article: Article) -> bool:
     return has_korean_company_relevance or has_tourism_flow_relevance or has_macro_relevance
 
 
+def is_naver_news_link(link: str) -> bool:
+    domain = urlparse(link).netloc.lower()
+    if domain in NAVER_NEWS_DOMAINS:
+        return True
+    return domain.endswith(".naver.com")
+
+
+def is_korean_media_article(article: Article) -> bool:
+    domain = urlparse(article.link).netloc.lower()
+    source_lower = article.source.lower()
+    if domain.endswith(".kr") or domain in KOREAN_MEDIA_DOMAINS:
+        return True
+    korean_media_source_hints = ("연합뉴스", "한국", "매일경제", "한경", "중앙", "조선", "동아", "경향")
+    return any(hint in article.source for hint in korean_media_source_hints) or ".co.kr" in domain or "kore" in source_lower
+
+
+def source_priority(article: Article) -> int:
+    if is_naver_news_link(article.link) or article.source == "Naver News":
+        return 0
+    if is_korean_media_article(article):
+        return 1
+    return 2
+
+
 def select_main_candidates_with_naver_priority(candidates: list[MainCandidate]) -> list[MainCandidate]:
     if not candidates:
         return []
@@ -335,7 +390,29 @@ def select_main_candidates_with_naver_priority(candidates: list[MainCandidate]) 
     return rank_main(selected)
 
 
+def prioritize_naver_output(items: list[T], extractor: Callable[[T], Article]) -> list[T]:
+    if not items:
+        return []
+
+    naver_items = [item for item in items if is_naver_news_link(extractor(item).link)]
+    non_naver_items = [item for item in items if not is_naver_news_link(extractor(item).link)]
+    if not naver_items:
+        return items
+
+    required_naver = math.ceil(len(items) * OUTPUT_NAVER_RATIO)
+    if len(naver_items) >= required_naver:
+        allowed_non_naver = max(0, len(items) - required_naver)
+        return naver_items + non_naver_items[:allowed_non_naver]
+
+    return naver_items + non_naver_items
+
+
 def is_more_reliable(candidate: Article, existing: Article) -> bool:
+    candidate_priority = source_priority(candidate)
+    existing_priority = source_priority(existing)
+    if candidate_priority != existing_priority:
+        return candidate_priority < existing_priority
+
     tier = {
         "Reuters": 5,
         "Bloomberg": 5,
@@ -380,11 +457,18 @@ def classify_main(article: Article) -> MainCandidate | None:
 
 def rank_main(items: list[MainCandidate]) -> list[MainCandidate]:
     rank = {"high": 0, "medium": 1, "low": 2}
-    return sorted(items, key=lambda x: (rank[x.importance], -x.article.published_at.timestamp()))
+    return sorted(
+        items,
+        key=lambda x: (
+            source_priority(x.article),
+            rank[x.importance],
+            -x.article.published_at.timestamp(),
+        ),
+    )
 
 
 def rank_reference(items: list[ReferenceCandidate]) -> list[ReferenceCandidate]:
-    return sorted(items, key=lambda x: -x.article.published_at.timestamp())
+    return sorted(items, key=lambda x: (source_priority(x.article), -x.article.published_at.timestamp()))
 
 
 def one_line_summary(article: Article) -> str:
@@ -403,8 +487,8 @@ def category_label(article: Article) -> str:
 
 
 def render(main_items: list[MainCandidate], ref_items: list[ReferenceCandidate]) -> str:
-    kst_date = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
-    lines: list[str] = [f"{kst_date} 뉴스", ""]
+    kst_date = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%y/%m/%d")
+    lines: list[str] = [f"★주요 뉴스({kst_date})", ""]
 
     combined_articles = [item.article for item in main_items] + [item.article for item in ref_items]
 
@@ -480,6 +564,9 @@ def main() -> int:
 
     ranked_main = select_main_candidates_with_naver_priority(main_candidates)
     ranked_reference = rank_reference(reference_candidates)[:MAX_REFERENCE]
+
+    ranked_main = prioritize_naver_output(ranked_main, lambda x: x.article)
+    ranked_reference = prioritize_naver_output(ranked_reference, lambda x: x.article)
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(render(ranked_main, ranked_reference), encoding="utf-8")
